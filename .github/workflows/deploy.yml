@@ -10,6 +10,7 @@ env:
   ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
   ECR_REPOSITORY: to-do-next-type
   INSTANCE_ID: i-0e8da6107404d0623
+  PUBLIC_URL: http://15.207.190.237
   CONTAINER_PORT: "3000"
 
 jobs:
@@ -25,13 +26,21 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Lint
         run: npm run lint --if-present
 
-      - name: Build
-        run: npm run build
+      - name: Build (with diagnostics)
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee build.log || { echo "::error::Next.js build failed"; cat build.log; exit 1; }
+          echo "Build output directory:"
+          ls -la .next || true
+          echo "Build completed successfully."
+
+      - name: Ensure public directory exists (Dockerfile requirement)
+        run: mkdir -p public
 
       - name: Configure AWS credentials
         run: |
@@ -75,12 +84,17 @@ jobs:
           COMMAND_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$AWS_REGION" --document-name "AWS-RunShellScript" --parameters file:///tmp/ssm-params.json --query "Command.CommandId" --output text)
           echo "SSM Command ID: $COMMAND_ID"
           aws ssm wait command-executed --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION"
-          aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "Status" --output text
+          STATUS=$(aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "Status" --output text)
+          echo "SSM Status: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION"
+            exit 1
+          fi
 
       - name: Health check
         run: |
           for i in $(seq 1 10); do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://15.207.190.237 || true)
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || true)
             echo "Attempt $i: HTTP $CODE"
             if [ "$CODE" = "200" ]; then
               echo "Deployment verified: healthy."
@@ -88,5 +102,5 @@ jobs:
             fi
             sleep 15
           done
-          echo "Health check failed."
+          echo "::error::Health check failed after 10 attempts."
           exit 1
