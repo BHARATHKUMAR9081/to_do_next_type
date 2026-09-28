@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useState,useEffect } from "react";
-import Task from "./Task";
+import React, { useState, useEffect } from "react";
 import DoneTask from "./DoneTask";
 
 interface Countdown {
@@ -20,7 +19,7 @@ export default function RightBar() {
   const [doneTasks, setDoneTasks] = useState<DoneItem[]>([]);
   const fetchDoneTasks = async () => {
     try {
-      const response = await fetch("http://localhost:3000/api/done");
+      const response = await fetch("/api/done");
       const data = await response.json();
       console.log("Fetched:", data);
       setDoneTasks(data); 

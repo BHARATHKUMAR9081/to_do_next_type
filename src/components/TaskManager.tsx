@@ -20,7 +20,7 @@ export default function TaskManager() {
 
   const fetchAllTasks = async () => {
     try {
-      const response = await fetch("http://localhost:3000/api/getAll");
+      const response = await fetch("/api/getAll");
       if (!response.ok) throw new Error("Network error");
       const data: TaskItem[] = await response.json();
       setTasks(data);

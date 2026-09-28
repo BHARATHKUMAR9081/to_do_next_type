@@ -12,7 +12,7 @@ export default function Search() {
     }
 
     try {
-      const response = await fetch(`http://localhost:3000/api/search/${title}`);
+      const response = await fetch(`/api/search/${encodeURIComponent(title.trim())}`);
       if (!response.ok) {
         throw new Error("Task not found.");
       }
@@ -30,8 +30,8 @@ export default function Search() {
         confirmButtonText: "Close"
       });
 
-    } catch (err: any) {
-      Swal.fire("Error", err.message || "Something went wrong", "error");
+    } catch (err) {
+      Swal.fire("Error", err instanceof Error ? err.message : "Something went wrong", "error");
     }
   };
 

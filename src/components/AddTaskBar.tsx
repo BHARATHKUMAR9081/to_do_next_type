@@ -30,7 +30,7 @@ export default function AddTaskBar() {
     };
 
     try {
-      const response = await fetch("http://localhost:3000/api/add", {
+      const response = await fetch("/api/add", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

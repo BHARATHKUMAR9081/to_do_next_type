@@ -41,7 +41,7 @@ export default function Task(props: properties) {
 
     if (formValues) {
       try {
-        const response = await fetch(`http://localhost:3000/api/edit/${title}`, {
+        const response = await fetch(`/api/edit/${encodeURIComponent(title)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ countdown: formValues }),
@@ -78,7 +78,7 @@ export default function Task(props: properties) {
 
           <button
             onClick={async () => {
-              await fetch(`http://localhost:3000/api/delete/${title}`, {
+              await fetch(`/api/delete/${encodeURIComponent(title)}`, {
                 method: "DELETE",
               });
               window.location.reload();
@@ -93,12 +93,12 @@ export default function Task(props: properties) {
           id={`check${title}`}
           onChange={async (e) => {
             const isChecked = e.target.checked;
-            await fetch(`http://localhost:3000/api/done/${title}`, {
+            await fetch(`/api/done/${encodeURIComponent(title)}`, {
               method: "POST",
             });
             console.log(`Task ${title} marked as done: ${isChecked}`);
 
-            const newData = await fetch(`http://localhost:3000/api/search/${title}`);
+            const newData = await fetch(`/api/search/${encodeURIComponent(title)}`);
             console.log(await newData.json());
           }}
           type="checkbox"

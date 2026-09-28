@@ -1,4 +1,3 @@
-import FAIcon from "./FAIcon";
 
 interface properties{
     title : string;
