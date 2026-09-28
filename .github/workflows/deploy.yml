@@ -56,7 +56,6 @@ jobs:
           docker build -t "$FULL_IMAGE:latest" -t "$FULL_IMAGE:${{ github.sha }}" .
           docker push "$FULL_IMAGE:latest"
           docker push "$FULL_IMAGE:${{ github.sha }}"
-          echo "IMAGE_URI=$FULL_IMAGE:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Fetch runtime secrets from Secrets Manager
         run: |
@@ -104,10 +103,10 @@ jobs:
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || echo "000")
             echo "Attempt $i: HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
-              echo "Deployment healthy at $PUBLIC_URL"
+              echo "Health check passed."
               exit 0
             fi
             sleep 10
           done
-          echo "Health check failed after 30 attempts"
+          echo "Health check failed after 30 attempts."
           exit 1
