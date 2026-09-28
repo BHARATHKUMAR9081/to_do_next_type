@@ -88,20 +88,21 @@ jobs:
           echo "SSM command status: $STATUS"
           if [ "$STATUS" != "Success" ]; then
             aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text || true
-            echo "::error::SSM deployment command failed"
+            echo "::error::SSM deploy command failed"
             exit 1
           fi
 
-      - name: Health check
+      - name: Verify deployment health
         run: |
-          for i in $(seq 1 30); do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || echo "000")
-            echo "Attempt $i: HTTP $HTTP_CODE"
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "Deployment healthy at $PUBLIC_URL"
+          echo "Health check target: $PUBLIC_URL"
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL" || echo "000")
+            echo "Attempt $i: HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Deployment verified: application is healthy."
               exit 0
             fi
             sleep 10
           done
-          echo "::error::Health check failed at $PUBLIC_URL"
+          echo "::error::Health check failed: did not receive HTTP 200 from $PUBLIC_URL"
           exit 1
