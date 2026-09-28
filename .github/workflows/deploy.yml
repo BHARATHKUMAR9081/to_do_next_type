@@ -11,6 +11,7 @@ env:
   ECR_REPOSITORY: to-do-next-type
   INSTANCE_ID: i-013004e5967e034fc
   PUBLIC_URL: http://13.234.180.139
+  SECRET_ID: deptic/to_do_next_type/secrets
 
 jobs:
   build-and-deploy:
@@ -35,7 +36,6 @@ jobs:
         run: |
           set -o pipefail
           npm run build 2>&1 | tee build.log
-          echo "BUILD_EXIT=$?" >> $GITHUB_ENV
           ls -la .next || true
 
       - name: Configure AWS credentials (static)
@@ -62,7 +62,7 @@ jobs:
         run: |
           export AWS_DEFAULT_REGION="$AWS_REGION"
           aws secretsmanager get-secret-value \
-            --secret-id "deptic/to_do_next_type/secrets" \
+            --secret-id "$SECRET_ID" \
             --region "$AWS_REGION" \
             --query SecretString --output text > /tmp/runtime-secrets.json
           echo "Secrets fetched successfully"
@@ -70,10 +70,10 @@ jobs:
       - name: Deploy to EC2 via SSM
         run: |
           export AWS_DEFAULT_REGION="$AWS_REGION"
-          REGION="$AWS_REGION"
-          ECR_REGISTRY_VAL="$ECR_REGISTRY"
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
-          INSTANCE_ID_VAL="$INSTANCE_ID"
+          export REGION="$AWS_REGION"
+          export ECR_REGISTRY_VAL="$ECR_REGISTRY"
+          export IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+          export INSTANCE_ID_VAL="$INSTANCE_ID"
           cat > /tmp/ssm-params.json << 'SSMPARAMS'
           {
             "commands": [
@@ -104,7 +104,7 @@ jobs:
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || echo "000")
             echo "Attempt $i: HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
-              echo "Deployment healthy: $PUBLIC_URL"
+              echo "Deployment healthy at $PUBLIC_URL"
               exit 0
             fi
             sleep 10
