@@ -88,22 +88,22 @@ jobs:
           echo "SSM Command ID: $COMMAND_ID"
           aws ssm wait command-executed --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION"
           STATUS=$(aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "Status" --output text)
-          echo "SSM Command Status: $STATUS"
+          echo "SSM command status: $STATUS"
           if [ "$STATUS" != "Success" ]; then
-            aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
+            aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "{Status:Status,Output:Output,Error:StandardErrorContent}" --output text
             exit 1
           fi
 
       - name: Health check
         run: |
-          for i in $(seq 1 10); do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || true)
-            echo "Attempt $i: HTTP $CODE"
-            if [ "$CODE" = "200" ]; then
-              echo "Deployment verified: $PUBLIC_URL returned 200"
+          for i in $(seq 1 12); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL" || echo "000")
+            echo "Attempt $i: HTTP $HTTP_CODE"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health check passed."
               exit 0
             fi
             sleep 10
           done
-          echo "::error::Health check failed: $PUBLIC_URL did not return HTTP 200"
+          echo "::error::Health check failed at $PUBLIC_URL"
           exit 1
