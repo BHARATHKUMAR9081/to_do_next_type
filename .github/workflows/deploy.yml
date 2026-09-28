@@ -71,7 +71,7 @@ jobs:
           export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
           export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
           FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          cat > /tmp/ssm-params.json << SSMEOF
+          cat > /tmp/ssm-params.json << SSMPARAMS
           {
             "commands": [
               "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
@@ -83,12 +83,12 @@ jobs:
               "docker ps --filter name=app"
             ]
           }
-          SSMEOF
+          SSMPARAMS
           COMMAND_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$AWS_REGION" --document-name "AWS-RunShellScript" --parameters file:///tmp/ssm-params.json --query "Command.CommandId" --output text)
           echo "SSM Command ID: $COMMAND_ID"
           aws ssm wait command-executed --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION"
           STATUS=$(aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "Status" --output text)
-          echo "SSM command status: $STATUS"
+          echo "SSM Command Status: $STATUS"
           if [ "$STATUS" != "Success" ]; then
             aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
             exit 1
@@ -96,14 +96,14 @@ jobs:
 
       - name: Health check
         run: |
-          for i in $(seq 1 20); do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || echo "000")
+          for i in $(seq 1 15); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || true)
             echo "Attempt $i: HTTP $HTTP_CODE"
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "Deployment verified: $PUBLIC_URL is healthy."
+              echo "Deployment healthy at $PUBLIC_URL"
               exit 0
             fi
             sleep 10
           done
-          echo "::error::Health check failed: $PUBLIC_URL did not return HTTP 200."
+          echo "::error::Health check failed: $PUBLIC_URL did not return HTTP 200"
           exit 1
