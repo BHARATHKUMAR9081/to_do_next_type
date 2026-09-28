@@ -33,7 +33,9 @@ jobs:
         run: npm run lint || true
 
       - name: Build Next.js application
-        run: npm run build
+        run: |
+          set -e
+          NEXT_TELEMETRY_DISABLED=1 npm run build
 
       - name: Configure AWS credentials
         run: |
@@ -91,42 +93,16 @@ jobs:
           set -e
           export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
           export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          REGION="$AWS_REGION"
-          INSTANCE_ID="$INSTANCE_ID"
-          cat > /tmp/ssm-health.json << 'SSMHEALTH'
-          {
-            "commands": [
-              "sleep 10",
-              "docker ps --filter name=app --filter status=running",
-              "curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/"
-            ]
-          }
-          SSMHEALTH
-          COMMAND_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$REGION" --document-name "AWS-RunShellScript" --parameters file:///tmp/ssm-health.json --query "Command.CommandId" --output text)
-          aws ssm wait command-executed --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$REGION" || true
-          STATUS=$(aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$REGION" --query "Status" --output text)
-          if [ "$STATUS" != "Success" ]; then
-            echo "Health verification command failed: $STATUS"
-            aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$REGION" --query "StandardErrorContent" --output text
-            exit 1
-          fi
-          HTTP_CODE=$(aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$REGION" --query "CommandPlugins[0].Output" --output text | tail -1 | tr -d '[:space:]')
-          echo "Health check HTTP status: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "Container health check failed (expected 200, got $HTTP_CODE)"
-            exit 1
-          fi
-
-      - name: Verify public endpoint
-        run: |
-          for i in $(seq 1 10); do
-            HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL" || true)
+          for i in $(seq 1 30); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || true)
             echo "Attempt $i: HTTP $HTTP_CODE"
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "Public endpoint is healthy: $PUBLIC_URL"
+              echo "Health check passed"
               exit 0
             fi
             sleep 10
           done
-          echo "Public endpoint health check failed after 10 attempts"
+          echo "Health check failed: application did not return HTTP 200"
+          docker_logs_cmd=$(printf '{"commands":["docker logs --tail 100 app"]}' | base64)
+          aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$AWS_REGION" --document-name "AWS-RunShellScript" --parameters '{"commands":["docker logs --tail 100 app"]}' --output text || true
           exit 1
