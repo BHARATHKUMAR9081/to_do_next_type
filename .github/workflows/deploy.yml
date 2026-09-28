@@ -70,40 +70,40 @@ jobs:
         run: |
           export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
           export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          cat > /tmp/ssm-params.json << 'SSMPARAMS'
+          FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          cat > /tmp/ssm-params.json << SSMEOF
           {
             "commands": [
-              "aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 759204735992.dkr.ecr.ap-south-1.amazonaws.com",
-              "docker pull 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest",
+              "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
+              "docker pull $FULL_IMAGE",
               "docker stop app || true",
               "docker rm app || true",
-              "docker run -d --restart always -p 80:3000 --name app 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest",
+              "docker run -d --restart always -p 80:$CONTAINER_PORT --name app $FULL_IMAGE",
               "sleep 10",
               "docker ps --filter name=app"
             ]
           }
-          SSMPARAMS
+          SSMEOF
           COMMAND_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" --region "$AWS_REGION" --document-name "AWS-RunShellScript" --parameters file:///tmp/ssm-params.json --query "Command.CommandId" --output text)
           echo "SSM Command ID: $COMMAND_ID"
           aws ssm wait command-executed --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION"
           STATUS=$(aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "Status" --output text)
           echo "SSM command status: $STATUS"
           if [ "$STATUS" != "Success" ]; then
-            aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "CommandPlugins" --output json || true
-            echo "::error::SSM deploy command failed with status $STATUS"
+            aws ssm get-command-invocation --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$AWS_REGION" --query "StandardErrorContent" --output text
             exit 1
           fi
 
-      - name: Verify deployment (health check)
+      - name: Health check
         run: |
-          for i in $(seq 1 15); do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$PUBLIC_URL" || echo "000")
+          for i in $(seq 1 20); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL" || echo "000")
             echo "Attempt $i: HTTP $HTTP_CODE"
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "Health check passed: $PUBLIC_URL returned 200"
+              echo "Deployment verified: $PUBLIC_URL is healthy."
               exit 0
             fi
             sleep 10
           done
-          echo "::error::Health check failed: $PUBLIC_URL did not return HTTP 200"
+          echo "::error::Health check failed: $PUBLIC_URL did not return HTTP 200."
           exit 1
