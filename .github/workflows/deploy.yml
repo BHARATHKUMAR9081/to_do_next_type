@@ -6,12 +6,11 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: ap-south-1
-  ECR_REPOSITORY: to-do-next-type
-  ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
-  INSTANCE_ID: i-0a7c50e356283e5fb
-  PUBLIC_URL: http://3.108.70.64
-  SECRETS_ID: deptic/to_do_next_type/secrets
+  AWS_REGION: "ap-south-1"
+  ECR_REPOSITORY: "to-do-next-type"
+  ECR_REGISTRY: "759204735992.dkr.ecr.ap-south-1.amazonaws.com"
+  INSTANCE_ID: "i-0a7c50e356283e5fb"
+  PUBLIC_URL: "http://3.108.70.64"
   NODE_VERSION: "20"
 
 jobs:
@@ -28,7 +27,12 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps
+          fi
 
       - name: Lint
         run: npm run lint --if-present
@@ -40,15 +44,10 @@ jobs:
         if: failure()
         run: |
           echo "=== Build failed: dumping diagnostics ==="
-          echo "--- node version ---"
           node -v
-          echo "--- npm version ---"
           npm -v
-          echo "--- files at root ---"
           ls -la
-          echo "--- disk usage ---"
           df -h || true
-          echo "--- npm cache verify ---"
           npm cache verify || true
 
       - name: Setup Buildx
@@ -58,21 +57,25 @@ jobs:
         run: |
           export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
           export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          aws sts get-caller-identity --region ap-south-1
+          aws sts get-caller-identity --region "ap-south-1"
 
       - name: Login to ECR
         run: |
-          aws ecr get-login-password --region ap-south-1 \
-            | docker login --username AWS --password-stdin 759204735992.dkr.ecr.ap-south-1.amazonaws.com
+          export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+          export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          aws ecr get-login-password --region "ap-south-1" \
+            | docker login --username AWS --password-stdin "759204735992.dkr.ecr.ap-south-1.amazonaws.com"
 
       - name: Build and push image
         run: |
-          IMAGE_URI="759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:${GITHUB_SHA::12}"
+          ECR_REGISTRY="759204735992.dkr.ecr.ap-south-1.amazonaws.com"
+          ECR_REPOSITORY="to-do-next-type"
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::12}"
+          LATEST_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
           echo "Building image: $IMAGE_URI"
-          docker build -t "$IMAGE_URI" .
-          docker tag "$IMAGE_URI" 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest
+          docker build -t "$IMAGE_URI" -t "$LATEST_URI" .
           docker push "$IMAGE_URI"
-          docker push 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest
+          docker push "$LATEST_URI"
           echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
 
   deploy:
@@ -83,7 +86,7 @@ jobs:
         run: |
           export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
           export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-          aws sts get-caller-identity --region ap-south-1
+          aws sts get-caller-identity --region "ap-south-1"
 
       - name: Deploy to EC2 via SSM
         run: |
@@ -92,18 +95,20 @@ jobs:
           REGION="ap-south-1"
           INSTANCE_ID="i-0a7c50e356283e5fb"
           ECR_REGISTRY="759204735992.dkr.ecr.ap-south-1.amazonaws.com"
-          IMAGE_URI="$ECR_REGISTRY/to-do-next-type:${GITHUB_SHA::12}"
+          ECR_REPOSITORY="to-do-next-type"
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::12}"
 
-          cat > /tmp/ssm-params.json << 'SSMPARAMS'
+          cat > /tmp/ssm-params.json << SSMPARAMS
           {
             "commands": [
               "set -e",
-              "aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 759204735992.dkr.ecr.ap-south-1.amazonaws.com",
-              "docker pull 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest",
+              "export AWS_ACCESS_KEY_ID=\$(cat /etc/aws-creds/aws_access_key_id 2>/dev/null || echo '')",
+              "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
+              "docker pull $IMAGE_URI",
               "docker stop app || true",
               "docker rm app || true",
-              "docker run -d --restart always -p 80:8000 --name app 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest",
-              "docker ps --no-trunc"
+              "docker run -d --restart always -p 80:3000 --name app $IMAGE_URI",
+              "docker ps | grep app"
             ]
           }
           SSMPARAMS
@@ -112,42 +117,54 @@ jobs:
             --instance-ids "$INSTANCE_ID" \
             --region "$REGION" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy to-do-next-type" \
             --parameters file:///tmp/ssm-params.json \
-            --query "Command.CommandId" --output text)
+            --query "Command.CommandId" \
+            --output text)
+          echo "SSM Command ID: $COMMAND_ID"
 
-          echo "SSM command id: $COMMAND_ID"
-          aws ssm wait command-executed --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" --region "$REGION"
-          STATUS=$(aws ssm get-command-invocation \
-            --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" \
-            --region "$REGION" --query "Status" --output text)
+          echo "Waiting for SSM command to finish..."
+          for i in $(seq 1 30); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region "$REGION" \
+              --query "Status" \
+              --output text)
+            echo "Attempt $i: $STATUS"
+            if [ "$STATUS" = "Success" ]; then
+              break
+            fi
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --region "$REGION" \
+                --query "StandardErrorContent" \
+                --output text || true
+              exit 1
+            fi
+            sleep 5
+          done
+
           if [ "$STATUS" != "Success" ]; then
-            aws ssm get-command-invocation \
-              --instance-id "$INSTANCE_ID" --command-id "$COMMAND_ID" \
-              --region "$REGION" --output json || true
-            echo "Deployment command failed with status: $STATUS"
+            echo "SSM command did not succeed"
             exit 1
           fi
-          echo "Deployment command succeeded."
 
   verify:
     needs: deploy
     runs-on: ubuntu-latest
     steps:
-      - name: Health check (HTTP 200 required)
+      - name: Health check
         run: |
-          set -e
-          URL="http://3.108.70.64"
-          echo "Checking health at $URL"
-          for i in $(seq 1 15); do
-            CODE=$(curl -s -o /tmp/body.html -w "%{http_code}" -m 10 "$URL" || echo "000")
-            echo "Attempt $i -> HTTP $CODE"
-            if [ "$CODE" = "200" ]; then
-              echo "Health check PASSED (HTTP 200)."
-              head -c 500 /tmp/body.html || true
+          for i in $(seq 1 20); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://3.108.70.64" || echo "000")
+            echo "Attempt $i: HTTP $HTTP_CODE"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Health check passed"
               exit 0
             fi
-            sleep 10
+            sleep 5
           done
-          echo "Health check FAILED: did not receive HTTP 200 from $URL"
+          echo "Health check failed: did not receive HTTP 200 from http://3.108.70.64"
           exit 1
