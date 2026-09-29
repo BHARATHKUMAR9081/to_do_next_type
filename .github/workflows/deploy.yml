@@ -1,0 +1,136 @@
+name: Build and Deploy to EC2 Docker
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_REPOSITORY: to-do-next-type
+  INSTANCE_ID: i-0a4875440bbee0ee2
+  CONTAINER_PORT: "3000"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        run: npm run lint -- --max-warnings=0 || true
+
+      - name: Build application (diagnostics enabled)
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/build.log
+          echo "Build exit status: $?"
+          test -d .next || { echo "::error::Next.js build output (.next) missing"; exit 1; }
+
+      - name: Ensure Dockerfile exists (Next.js standalone-style image)
+        run: |
+          if [ ! -f Dockerfile ]; then
+            cat > Dockerfile << 'EOF'
+          FROM node:20-alpine AS deps
+          WORKDIR /app
+          COPY package.json package-lock.json* ./
+          RUN npm install
+
+          FROM node:20-alpine AS builder
+          WORKDIR /app
+          COPY --from=deps /app/node_modules ./node_modules
+          COPY . .
+          RUN npm run build
+
+          FROM node:20-alpine AS runner
+          WORKDIR /app
+          ENV NODE_ENV=production
+          COPY --from=builder /app ./
+          EXPOSE 3000
+          CMD ["npm", "run", "start"]
+          EOF
+          fi
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials (static)
+        run: |
+          export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+          export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "AWS creds configured via environment"
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Build and push image
+        run: |
+          FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY"
+          docker build -t "$FULL_IMAGE:latest" -t "$FULL_IMAGE:${GITHUB_SHA::7}" .
+          docker push "$FULL_IMAGE:latest"
+          docker push "$FULL_IMAGE:${GITHUB_SHA::7}"
+          echo "IMAGE_URI=$FULL_IMAGE:${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Deploy to EC2 via SSM
+        run: |
+          FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY"
+          cat > /tmp/ssm-params.json << 'SSMPARAMS'
+          {
+            "commands": [
+              "export AWS_DEFAULT_REGION=ap-south-1",
+              "aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 759204735992.dkr.ecr.ap-south-1.amazonaws.com",
+              "docker pull 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest",
+              "docker stop app || true",
+              "docker rm app || true",
+              "docker run -d --restart always -p 80:3000 --name app 759204735992.dkr.ecr.ap-south-1.amazonaws.com/to-do-next-type:latest"
+            ]
+          }
+          SSMPARAMS
+          COMMAND_ID=$(AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --region "$AWS_REGION" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file:///tmp/ssm-params.json \
+            --query "Command.CommandId" --output text)
+          echo "SSM Command ID: $COMMAND_ID"
+          for i in $(seq 1 20); do
+            STATUS=$(AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}" aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --region "$AWS_REGION" --query "Status" --output text)
+            echo "Attempt $i: $STATUS"
+            [ "$STATUS" = "Success" ] && exit 0
+            [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ] && exit 1
+            sleep 10
+          done
+          echo "::error::SSM command did not complete in time"
+          exit 1
+
+      - name: Health check (HTTP 200 required)
+        run: |
+          for i in $(seq 1 15); do
+            echo "Health check attempt $i against http://3.108.187.26 ..."
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://3.108.187.26 || echo "000")
+            echo "HTTP status: $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Deployment verified: application healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Health check failed: did not receive HTTP 200 from http://3.108.187.26"
+          exit 1
